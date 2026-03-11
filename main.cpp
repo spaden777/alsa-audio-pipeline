@@ -28,8 +28,9 @@ static void fatal_audio_error(const char* msg, int err, snd_pcm_t* handle)
     std::exit(1);
 }
 
-static snd_pcm_t* cap_open_device(
+static snd_pcm_t* audio_open_device(
     const char* device,
+    snd_pcm_stream_t stream_type,
     unsigned int& sample_rate,
     int channels,
     snd_pcm_format_t format,
@@ -38,7 +39,7 @@ static snd_pcm_t* cap_open_device(
     snd_pcm_t* handle = nullptr;
     snd_pcm_hw_params_t* hw_params = nullptr;
 
-    int err = snd_pcm_open(&handle, device, SND_PCM_STREAM_CAPTURE, 0);
+    int err = snd_pcm_open(&handle, device, stream_type, 0);
     if (err < 0)
         fatal_audio_error("snd_pcm_open failed", err, handle);
 
@@ -87,18 +88,40 @@ static snd_pcm_sframes_t cap_read_buffer(
         snd_pcm_readi(handle, capture_buffer.data(), capture_buffer.size());
 
     if (frames_read == -EPIPE) {
-        std::cerr << "Overrun occurred; re-preparing device\n";
+        std::cerr << "Capture overrun occurred; re-preparing device\n";
         snd_pcm_prepare(handle);
         return 0;
     }
 
     if (frames_read < 0) {
-        std::cerr << "Read error: " << snd_strerror(frames_read) << "\n";
+        std::cerr << "Capture read error: " << snd_strerror(frames_read) << "\n";
         snd_pcm_prepare(handle);
         return 0;
     }
 
     return frames_read;
+}
+
+static snd_pcm_sframes_t rend_write_buffer(
+    snd_pcm_t* handle,
+    const std::vector<int16_t>& playback_buffer)
+{
+    snd_pcm_sframes_t frames_written =
+        snd_pcm_writei(handle, playback_buffer.data(), playback_buffer.size());
+
+    if (frames_written == -EPIPE) {
+        std::cerr << "Playback underrun occurred; re-preparing device\n";
+        snd_pcm_prepare(handle);
+        return 0;
+    }
+
+    if (frames_written < 0) {
+        std::cerr << "Playback write error: " << snd_strerror(frames_written) << "\n";
+        snd_pcm_prepare(handle);
+        return 0;
+    }
+
+    return frames_written;
 }
 
 static size_t rb_push_samples(
@@ -157,27 +180,42 @@ int main()
 {
     // Audio configuration
     const char* device = "plughw:2,0";
-    unsigned int sample_rate = 16000;
+    unsigned int capture_sample_rate = 16000;
+    unsigned int playback_sample_rate = 16000;
     const int channels = 1;
     const snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
-    snd_pcm_uframes_t frames_per_buffer = 320;   // 20 ms @ 16 kHz
+
+    // Larger periods reduce underruns
+    snd_pcm_uframes_t capture_frames_per_buffer = 640;   // 40 ms @ 16 kHz
+    snd_pcm_uframes_t playback_frames_per_buffer = 640;  // 40 ms @ 16 kHz
 
     // Pipeline configuration
-    const size_t processing_frame_samples = 320;
+    const size_t processing_frame_samples = 640;
     const size_t ring_capacity = 8192;
-    const double gain = 2.0;
-    const int iterations = 200;
+    const double gain = 1.5;          // slightly safer than 2.0
+    const int iterations = 100;        // ~2 seconds at 40 ms/frame
+    const int playback_prefill_frames = 3;
 
-    snd_pcm_t* capture_handle = cap_open_device(
+    snd_pcm_t* capture_handle = audio_open_device(
         device,
-        sample_rate,
+        SND_PCM_STREAM_CAPTURE,
+        capture_sample_rate,
         channels,
         format,
-        frames_per_buffer);
+        capture_frames_per_buffer);
+
+    snd_pcm_t* playback_handle = audio_open_device(
+        device,
+        SND_PCM_STREAM_PLAYBACK,
+        playback_sample_rate,
+        channels,
+        format,
+        playback_frames_per_buffer);
 
     RingBuffer<int16_t> audio_rb(ring_capacity);
-    std::vector<int16_t> capture_buffer(frames_per_buffer);
+    std::vector<int16_t> capture_buffer(capture_frames_per_buffer);
     std::vector<int16_t> processing_frame(processing_frame_samples);
+    std::vector<int16_t> silence_frame(processing_frame_samples, 0);
 
     FILE* raw_file = std::fopen("samples.raw", "wb");
     FILE* amp_file = std::fopen("amplified.raw", "wb");
@@ -186,18 +224,35 @@ int main()
         if (raw_file) std::fclose(raw_file);
         if (amp_file) std::fclose(amp_file);
         snd_pcm_close(capture_handle);
+        snd_pcm_close(playback_handle);
         return 1;
     }
 
     console_countdown(3);
 
-    std::cout << "Device: " << device << "\n";
-    std::cout << "Sample rate: " << sample_rate << "\n";
+    std::cout << "Capture device: " << device << "\n";
+    std::cout << "Playback device: " << device << "\n";
+    std::cout << "Capture sample rate: " << capture_sample_rate << "\n";
+    std::cout << "Playback sample rate: " << playback_sample_rate << "\n";
     std::cout << "Channels: " << channels << "\n";
-    std::cout << "Frames per buffer: " << frames_per_buffer << "\n";
+    std::cout << "Capture frames per buffer: " << capture_frames_per_buffer << "\n";
+    std::cout << "Playback frames per buffer: " << playback_frames_per_buffer << "\n";
     std::cout << "Processing frame size: " << processing_frame_samples << "\n";
     std::cout << "Ring capacity: " << ring_capacity << "\n";
-    std::cout << "Gain: " << gain << "\n\n";
+    std::cout << "Gain: " << gain << "\n";
+    std::cout << "Iterations: " << iterations << "\n";
+    std::cout << "Playback prefill frames: " << playback_prefill_frames << "\n\n";
+
+    // Prefill playback with silence so playback starts with some cushion
+    for (int i = 0; i < playback_prefill_frames; ++i) {
+        snd_pcm_sframes_t frames_written =
+            rend_write_buffer(playback_handle, silence_frame);
+
+        if (frames_written <= 0) {
+            std::cerr << "Failed to prefill playback buffer\n";
+            break;
+        }
+    }
 
     for (int iteration = 0; iteration < iterations; ++iteration) {
         snd_pcm_sframes_t frames_read =
@@ -212,32 +267,49 @@ int main()
         // Push captured samples into ring buffer
         size_t pushed = rb_push_samples(audio_rb, capture_buffer, frames_read);
 
-        std::cout << "Iteration " << iteration
-                  << ": captured " << frames_read
-                  << ", pushed " << pushed
-                  << ", ring size " << audio_rb.size() << "\n";
+        // Keep console output lighter to avoid disturbing timing
+        if ((iteration % 5) == 0) {
+            std::cout << "Iteration " << iteration
+                      << ": captured " << frames_read
+                      << ", pushed " << pushed
+                      << ", ring size " << audio_rb.size() << "\n";
 
-        std::cout << "  First 8 samples: ";
-        for (int i = 0; i < 8 && i < static_cast<int>(frames_read); ++i)
-            std::cout << capture_buffer[i] << " ";
-        std::cout << "\n";
-
-        // Form one processing frame, apply gain, save processed output
-        if (rb_pop_frame(audio_rb, processing_frame)) {
-            dsp_apply_gain(processing_frame, gain);
-            file_write_samples(amp_file, processing_frame.data(), processing_frame.size());
-
-            std::cout << "  Processed one frame, ring size now "
-                      << audio_rb.size() << "\n";
-        } else {
-            std::cout << "  Not enough data for one processing frame\n";
+            std::cout << "  First 8 samples: ";
+            for (int i = 0; i < 8 && i < static_cast<int>(frames_read); ++i)
+                std::cout << capture_buffer[i] << " ";
+            std::cout << "\n";
         }
 
-        std::cout << "\n";
+        // Form one processing frame, apply gain, save processed output, render it
+        if (rb_pop_frame(audio_rb, processing_frame)) {
+            dsp_apply_gain(processing_frame, gain);
+
+            file_write_samples(
+                amp_file,
+                processing_frame.data(),
+                processing_frame.size());
+
+            snd_pcm_sframes_t frames_written =
+                rend_write_buffer(playback_handle, processing_frame);
+
+            if ((iteration % 5) == 0) {
+                std::cout << "  Processed one frame, wrote " << frames_written
+                          << " frames to playback, ring size now "
+                          << audio_rb.size() << "\n\n";
+            }
+        } else {
+            if ((iteration % 5) == 0) {
+                std::cout << "  Not enough data for one processing frame\n\n";
+            }
+        }
     }
+
+    // Let playback drain before shutdown
+    snd_pcm_drain(playback_handle);
 
     std::fclose(raw_file);
     std::fclose(amp_file);
     snd_pcm_close(capture_handle);
+    snd_pcm_close(playback_handle);
     return 0;
 }
