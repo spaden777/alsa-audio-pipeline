@@ -1,95 +1,89 @@
 # alsarb
 
-A small C++ program demonstrating a simple real-time audio pipeline on Linux using **ALSA** and a custom **ring buffer**.
+A C++ program demonstrating a real-time audio pipeline on Linux using **ALSA** and a custom **ring buffer**, with a threaded producer/consumer architecture.
 
-The program captures microphone audio, processes it, and optionally renders it to a playback device while also writing raw audio files for inspection.
-
-This project is intended as a **learning and interview study project** for understanding real-time audio pipelines.
+The program captures microphone audio, serializes raw samples to disk, processes frames through a DSP stage, serializes the processed output, and renders it to a playback device — all across two concurrent threads.
 
 ---
 
-# Overview
+## Pipeline
 
-The program implements the following pipeline:
+Two threads run concurrently, decoupled by a ring buffer:
 
 ```
-Microphone
-   ↓
-ALSA Capture
-   ↓
-capture_buffer
-   ↓
-RingBuffer
-   ↓
-processing_frame
-   ↓
-DSP (gain)
-   ↓
-File output + Playback
+CAPTURE THREAD
+  Mic → ALSA capture (snd_pcm_readi) → samples.raw → RingBuffer (push)
+
+PLAYBACK THREAD
+  RingBuffer (wait/pop) → DSP gain → amplified.raw → ALSA playback (snd_pcm_writei) → Speaker
 ```
 
-Audio flows through several stages:
-
-1. Capture audio from an ALSA device
-2. Store incoming samples in a ring buffer
-3. Pop fixed-size frames from the ring buffer
-4. Apply a simple DSP effect (gain)
-5. Write both original and processed audio to files
-6. Render processed audio to a playback device
+The ring buffer is the synchronization boundary between threads. The capture thread pushes samples and signals via a condition variable. The playback thread blocks until a full processing frame is available, then pops, processes, serializes, and renders it.
 
 ---
 
-# Features
+## Threading Model
 
-* ALSA microphone capture
-* ALSA audio playback
-* Lock-free style ring buffer implementation
-* Simple DSP example (gain)
-* Raw audio file output for debugging
-* Console diagnostics for learning purposes
+| Thread | Responsibilities |
+|---|---|
+| Capture thread | `snd_pcm_readi` → write `samples.raw` → `RingBuffer::push` → `notify_one` |
+| Main thread (playback) | `cond_var wait` → `RingBuffer::pop` → `dsp_apply_gain` → write `amplified.raw` → `snd_pcm_writei` |
+
+Shared state between threads:
+
+- `RingBuffer<int16_t>` — the sample queue
+- `std::mutex` — protects ring buffer access
+- `std::condition_variable` — playback thread sleeps until data is available
+- `std::atomic<bool> capture_done` — signals playback thread to drain and exit
 
 ---
 
-# Files
+## Files
 
 ### `main.cpp`
 
-Main program implementing the audio pipeline.
+Single-file implementation of the full pipeline. Contains all helper functions and `main()`.
 
-Contains the high-level stages:
+Helper functions:
 
-* ALSA device setup
-* audio capture loop
-* ring buffer processing
-* DSP processing
-* playback rendering
-* file output
-
----
+```
+audio_open_device()   — opens an ALSA PCM device for capture or playback
+cap_read_buffer()     — reads frames from ALSA; handles overrun (EPIPE)
+rend_write_buffer()   — writes frames to ALSA; handles underrun (EPIPE)
+rb_push_samples()     — pushes captured samples into the ring buffer
+rb_pop_frame()        — pops a fixed-size frame from the ring buffer
+dsp_apply_gain()      — applies gain with int16 saturation clamping
+file_write_samples()  — writes raw PCM samples to a file
+```
 
 ### `ringbuffer.hpp`
 
-A simple templated circular buffer implementation.
+Templated circular buffer. Fixed capacity, non-blocking push/pop, head/tail indices with modulo wrap. One slot intentionally unused to distinguish full from empty.
 
-Supports:
-
+```cpp
+RingBuffer<int16_t> rb(8192);
+rb.push(sample);
+rb.pop(sample);
+rb.size();
 ```
-push()
-pop()
-size()
-```
-
-The ring buffer decouples capture timing from processing timing.
 
 ---
 
-### `makefile`
+## Audio Format
 
-Builds the program using `g++` and links against ALSA.
+| Property | Value |
+|---|---|
+| Sample format | Signed 16-bit little-endian (S16_LE) |
+| Sample rate | 16,000 Hz |
+| Channels | Mono |
+| Frame size | 320 samples |
+| Frame duration | 20 ms |
+
+The 20 ms frame size (320 samples at 16 kHz) is standard in speech processing systems such as VAD, VoIP, and ML inference pipelines. At this frame size scheduling jitter can cause occasional playback underruns on non-real-time kernels.
 
 ---
 
-# Building
+## Build
 
 Install ALSA development headers if needed:
 
@@ -97,13 +91,19 @@ Install ALSA development headers if needed:
 sudo apt install libasound2-dev
 ```
 
-Compile:
+Compile debug build:
 
 ```
 make
 ```
 
-Clean build artifacts:
+Compile release build:
+
+```
+make release
+```
+
+Clean:
 
 ```
 make clean
@@ -111,153 +111,66 @@ make clean
 
 ---
 
-# Running
-
-Run the program:
+## Running
 
 ```
 ./alsarb
 ```
 
-The program will:
-
-1. Count down
-2. Capture audio
-3. Process frames
-4. Write audio files
-5. Play processed audio
-
-Example output:
-
-```
-Starting capture in 3...
-Starting capture in 2...
-Starting capture in 1...
-GO
-
-Capture device: plughw:2,0
-Playback device: plughw:2,0
-Sample rate: 16000
-Channels: 1
-```
+The program counts down, then captures approximately 4 seconds of audio. Console output is throttled to every 5 iterations to avoid disturbing timing.
 
 ---
 
-# Output Files
+## Output Files
 
-Two files are written for debugging:
+Two raw PCM files are written for debugging and validation:
 
-### `samples.raw`
+**`samples.raw`** — raw captured audio, written by the capture thread immediately after `snd_pcm_readi`.
 
-Raw captured microphone audio.
+**`amplified.raw`** — processed audio written by the playback thread after `dsp_apply_gain`, recording exactly what was sent to the speaker.
 
-### `amplified.raw`
-
-Audio after DSP gain processing.
-
----
-
-# Listening to the Raw Files
-
-These files are **16-bit signed little endian PCM** at **16 kHz mono**.
-
-Play them using ALSA:
+Play them back with `aplay`:
 
 ```
 aplay -f S16_LE -r 16000 -c 1 samples.raw
-```
-
-```
 aplay -f S16_LE -r 16000 -c 1 amplified.raw
 ```
 
 ---
 
-# Audio Parameters
+## DSP Stage
 
-Current configuration:
+The current DSP stage applies a linear gain:
 
 ```
-Sample rate:      16000 Hz
-Channels:         1 (mono)
-Format:           S16_LE
-Frame size:       640 samples
-Frame duration:   40 ms
+output_sample = clamp(input_sample × gain, -32768, 32767)
 ```
 
-### Why 640 samples?
-
-640 samples at 16 kHz equals **40 ms of audio**.
-
-This slightly larger buffer helps prevent **ALSA playback underruns** during development while still keeping latency relatively small.
+Clamping prevents integer overflow distortion at the int16 boundary. This stage is a placeholder — it can be replaced with filters, noise suppression, VAD, or ML inference without changing the pipeline architecture.
 
 ---
 
-# DSP Example
-
-The program applies a simple gain effect:
-
-```
-output_sample = input_sample × gain
-```
-
-The result is clamped to the valid 16-bit range:
-
-```
-[-32768, 32767]
-```
-
-This prevents integer overflow distortion.
-
----
-
-# ALSA Functions Used
-
-The program uses several ALSA PCM functions:
+## ALSA Functions
 
 | Function | Purpose |
-|--------|--------|
-| `snd_pcm_open` | Open audio device |
-| `snd_pcm_hw_params_any` | Initialize hardware parameters |
-| `snd_pcm_hw_params_set_access` | Set access type |
-| `snd_pcm_hw_params_set_format` | Set audio format |
-| `snd_pcm_hw_params_set_channels` | Set channel count |
-| `snd_pcm_hw_params_set_rate_near` | Negotiate sample rate |
-| `snd_pcm_hw_params_set_period_size_near` | Configure buffer period |
-| `snd_pcm_hw_params` | Apply hardware configuration |
+|---|---|
+| `snd_pcm_open` | Open capture or playback device |
+| `snd_pcm_hw_params_*` | Configure format, rate, channels, period size |
 | `snd_pcm_prepare` | Prepare device for streaming |
-| `snd_pcm_readi` | Read captured audio |
-| `snd_pcm_writei` | Write playback audio |
-| `snd_pcm_drain` | Finish playback before shutdown |
+| `snd_pcm_readi` | Read captured audio frames |
+| `snd_pcm_writei` | Write playback audio frames |
+| `snd_pcm_drain` | Flush playback before shutdown |
 | `snd_pcm_close` | Close device |
 
----
-
-# Notes on Real-Time Audio
-
-This program is intentionally simple and single-threaded.
-
-Real production audio systems often use:
-
-* separate capture and playback threads
-* callback-based audio APIs
-* larger buffering strategies
-* lock-free ring buffers
-
-This project focuses on **clarity and learning** rather than production performance.
+EPIPE (overrun on capture, underrun on playback) is handled by calling `snd_pcm_prepare` and continuing.
 
 ---
 
-# Possible Improvements
+## Possible Extensions
 
-Future enhancements could include:
-
-* multi-threaded capture / playback
-* real-time latency measurements
-* WAV file output
-* more advanced DSP (filters, AGC, noise suppression)
-* configurable devices via command line
-* stereo support
-
----
-
+- VAD (voice activity detection) in the DSP stage
+- Echo cancellation using playback reference signal
+- Streaming frames to an external API (e.g. OpenAI Realtime API)
+- Lock-free ring buffer using `std::atomic` head/tail
+- Configurable device and parameters via command line
+- WAV file output with header
