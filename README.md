@@ -109,7 +109,15 @@ rb.size();
 | Frame size | 320 samples |
 | Frame duration | 20 ms |
 
-The 20 ms frame size (320 samples at 16 kHz) is standard in speech processing systems such as VAD, VoIP, and ML inference pipelines. At this frame size scheduling jitter can cause occasional playback underruns on non-real-time kernels.
+The 20 ms frame size (320 samples at 16 kHz) is common in speech-processing systems such as VAD, VoIP, and ML inference pipelines. At this frame size, scheduler jitter on non-real-time Linux kernels can occasionally cause playback underruns.
+
+## Latency
+
+Each processing frame contains 320 samples at 16 kHz, corresponding to 20 ms of audio per frame.
+
+Because capture, buffering, processing, and playback operate on these frames, the end-to-end pipeline latency is approximately one frame plus any additional buffering required by the audio device.
+
+Frame sizes in the 10–20 ms range are widely used in speech and voice-processing systems because they provide a practical balance between responsiveness and processing efficiency.
 
 ## Build
 
