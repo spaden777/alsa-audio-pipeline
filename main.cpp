@@ -9,18 +9,38 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cmath>
 
+#define DEBUG_MESSAGES 1
+#include "debugmsg.hpp"
 #include "ringbuffer.hpp"
 
-void console_countdown(int seconds)
+
+void play_beep(snd_pcm_t* handle, int freq, int duration_ms)
 {
-    for (int i = seconds; i > 0; --i)
-    {
-        std::cout << "Starting capture in " << i << "...\n";
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+    const int sample_rate = 16000;
+
+    int samples = sample_rate * duration_ms / 1000;
+    std::vector<int16_t> buf(samples);
+
+    double phase = 0.0;
+    double step = 2.0 * M_PI * freq / sample_rate;
+
+    for (int i = 0; i < samples; ++i) {
+        buf[i] = static_cast<int16_t>(sin(phase) * 12000);
+        phase += step;
     }
 
-    std::cout << "GO\n\n";
+    snd_pcm_sframes_t written = snd_pcm_writei(handle, buf.data(), samples);
+
+    if (written == -EPIPE) {
+        snd_pcm_prepare(handle);
+        written = snd_pcm_writei(handle, buf.data(), samples);
+    }
+
+    if (written < 0) {
+        std::cerr << "Beep write error: " << snd_strerror(written) << "\n";
+    }
 }
 
 static void fatal_audio_error(const char* msg, int err, snd_pcm_t* handle)
@@ -81,6 +101,38 @@ static snd_pcm_t* audio_open_device(
         fatal_audio_error("snd_pcm_prepare failed", err, handle);
 
     return handle;
+}
+
+void console_countdown(int secs, const char* device)
+{
+    unsigned int sample_rate = 16000;
+    int channels = 1;
+    snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
+    snd_pcm_uframes_t frames = 320;
+
+    snd_pcm_t* handle = audio_open_device(
+        device,
+        SND_PCM_STREAM_PLAYBACK,
+        sample_rate,
+        channels,
+        format,
+        frames);
+
+    for (int i = secs; i > 0; --i)
+    {
+        std::cout << "Starting capture in " << i << "...\n";
+
+        play_beep(handle, 800, 120);
+
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    std::cout << "GO\n\n";
+    snd_pcm_prepare(handle);
+    play_beep(handle, 1200, 300);
+    snd_pcm_drain(handle);
+
+    snd_pcm_close(handle);
 }
 
 static snd_pcm_sframes_t cap_read_buffer(
@@ -198,6 +250,8 @@ int main()
     const int iterations = 200;
     const int playback_prefill_frames = 3;
 
+    console_countdown(3, device);
+
     snd_pcm_t* capture_handle = audio_open_device(
         device, SND_PCM_STREAM_CAPTURE,
         capture_sample_rate, channels, format, capture_frames_per_buffer);
@@ -224,8 +278,6 @@ int main()
         snd_pcm_close(playback_handle);
         return 1;
     }
-
-    console_countdown(3);
 
     std::cout << "Capture device:          " << device << "\n";
     std::cout << "Capture sample rate:     " << capture_sample_rate << "\n";
@@ -272,8 +324,7 @@ int main()
             rb_cv.notify_one();
 
             if ((iteration % 5) == 0) {
-                std::cout << "[capture] iteration " << iteration
-                          << ": captured " << frames_read << " frames\n";
+                dbgmsg("[capture] iteration " << iteration  << ": captured " << frames_read << " frames\n");
             }
         }
 
@@ -314,7 +365,7 @@ int main()
             ++frames_processed;
 
             if ((frames_processed % 5) == 0) {
-                std::cout << "[playback] processed frame " << frames_processed << "\n";
+                dbgmsg("[playback] processed frame " << frames_processed << "\n");
             }
         }
     }
