@@ -1,4 +1,4 @@
-# alsarb
+# alsa-audio-pipeline
 
 A C++ program demonstrating a real-time audio pipeline on Linux using **ALSA** and a custom **ring buffer**, with a threaded producer/consumer architecture.
 
