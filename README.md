@@ -1,8 +1,47 @@
-# alsa-audio-pipeline
+# ALSA Audio Pipeline (Linux)
 
-A C++ program demonstrating a real-time audio pipeline on Linux using **ALSA** and a custom **ring buffer**, with a threaded producer/consumer architecture.
+A small C++ project demonstrating a real-time audio processing pipeline on Linux using the ALSA API. This is great for those learning how to use ALSA in Linux.
 
-The program captures microphone audio, serializes raw samples to disk, processes frames through a DSP stage, serializes the processed output, and renders it to a playback device — all across two concurrent threads.
+The program captures microphone audio, passes samples through a producer/consumer ring buffer, applies a simple DSP stage, and renders playback — all in a threaded pipeline.
+
+This repository explores low-level Linux audio behavior, real-time buffering, and systems programming techniques commonly used in embedded audio and voice processing systems.
+
+## Features
+
+- ALSA PCM capture and playback
+- Producer/consumer ring buffer architecture
+- Multithreaded audio pipeline
+- Frame-based processing (20 ms frames)
+- Real-time buffering behavior and underrun handling
+- Ring buffer stress testing
+- Memory validation using Valgrind
+- ALSA device enumeration
+
+## Quick Start
+
+Build:
+
+```bash
+make
+```
+
+Run the audio pipeline:
+
+```bash
+./alsarb
+```
+
+List available ALSA audio devices:
+
+```bash
+./alsarb list-devices
+```
+
+Run the ring buffer stress test:
+
+```bash
+./alsarb test-ring
+```
 
 ---
 ## Why This Project Exists
