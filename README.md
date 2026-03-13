@@ -215,6 +215,129 @@ sample = sin(phase) * amplitude
 
 This audio path is separate from the main capture/playback pipeline and exists only to provide user feedback before recording starts. It also provides a simple example of UI-oriented playback that is distinct from the real-time capture/process/playback path.
 
+## Automated Testing
+
+Two helper scripts are included to validate the behavior of the application and verify memory correctness.
+
+### Mode Tests
+
+The script `test_modes.sh` exercises all supported command-line modes of the program.
+
+Run:
+
+```bash
+./test_modes.sh
+```
+
+Example output:
+
+```text
+Building project...
+g++ -Wall -Wextra -std=c++17 -g -O0 main.cpp -o alsarb -lasound
+
+Running mode tests...
+
+---------------------------------
+Test: default pipeline mode
+Starting capture in 3...
+Starting capture in 2...
+Starting capture in 1...
+GO
+
+Capture device:          plughw:2,0
+Capture sample rate:     16000
+Playback sample rate:    16000
+Channels:                1
+Capture frames/buffer:   320
+Playback frames/buffer:  320
+Processing frame size:   320
+Ring capacity:           8192
+Gain:                    1.5
+Iterations:              200
+
+[main.cpp:446] [capture] iteration 0: captured 320 frames
+[main.cpp:487] [playback] processed frame 10
+...
+[main.cpp:446] [capture] iteration 190: captured 320 frames
+[main.cpp:487] [playback] processed frame 200
+PASS
+
+---------------------------------
+Test: help (--help)
+PASS
+
+---------------------------------
+Test: help (-h)
+PASS
+
+---------------------------------
+Test: list-devices
+Available ALSA PCM devices:
+  null
+  default
+  pulse
+  plughw:CARD=PCH,DEV=0
+  plughw:CARD=P420,DEV=0
+  ...
+PASS
+
+---------------------------------
+Test: ring buffer stress test
+Running ring buffer stress test...
+Ring buffer test passed (1000000 iterations)
+PASS
+
+---------------------------------
+Test: unknown mode (should fail)
+Unknown mode: nonsense
+PASS
+
+---------------------------------
+All mode tests completed.
+```
+
+This script validates:
+
+- Default ALSA audio pipeline execution
+- Help output (`--help` and `-h`)
+- ALSA device enumeration (`list-devices`)
+- Ring buffer stress test (`test-ring`)
+- Error handling for unknown commands
+
+### Memory Testing with Valgrind
+
+The script `test_valgrind.sh` runs the ring buffer stress test under Valgrind to detect memory leaks or invalid memory access.
+
+Run:
+
+```bash
+./test_valgrind.sh
+```
+
+If Valgrind is not installed:
+
+```bash
+sudo apt update
+sudo apt install valgrind
+```
+
+Example output:
+
+```text
+Running ring buffer stress test...
+Ring buffer test passed (1000000 iterations)
+
+HEAP SUMMARY:
+    in use at exit: 0 bytes in 0 blocks
+    total heap usage: 3 allocs, 3 frees, 77,824 bytes allocated
+
+All heap blocks were freed -- no leaks are possible
+ERROR SUMMARY: 0 errors from 0 contexts
+```
+
+This confirms that the ring buffer implementation executes correctly and completes without memory leaks.
+
+
 ## Current Limitations
 
 This is an intentionally minimal audio pipeline and does not yet include several

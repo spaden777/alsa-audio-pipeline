@@ -7,9 +7,12 @@ DEBUG_FLAGS := -g -O0
 RELEASE_FLAGS := -O2 -DNDEBUG
 LDLIBS := -lasound
 
+VALGRIND := valgrind
+VALGRIND_FLAGS := --leak-check=full --show-leak-kinds=all --track-origins=yes
+
 all: debug
 
-.PHONY: debug release clean
+.PHONY: all debug release build clean valgrind
 
 debug: CXXFLAGS := $(COMMON_FLAGS) $(DEBUG_FLAGS)
 debug: build
@@ -20,5 +23,8 @@ release: build
 build:
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDLIBS)
 
+valgrind: debug
+	$(VALGRIND) $(VALGRIND_FLAGS) ./$(TARGET)
+
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) *.raw

@@ -15,7 +15,103 @@
 #include "debugmsg.hpp"
 #include "ringbuffer.hpp"
 
+void print_help(const char* prog)
+{
+    std::cout
+        << "Usage:\n"
+        << "  " << prog << " [mode]\n\n"
 
+        << "Modes:\n"
+        << "  test-ring      Run ring buffer stress test\n"
+        << "  list-devices   List available ALSA PCM devices\n"
+        << "  --help, -h     Show this help message\n\n"
+
+        << "Default behavior:\n"
+        << "  If no mode is specified, the program runs the ALSA audio\n"
+        << "  capture → ring buffer → DSP → playback pipeline.\n\n"
+
+        << "Examples:\n"
+        << "  " << prog << "\n"
+        << "  " << prog << " test-ring\n"
+        << "  " << prog << " list-devices\n";
+}
+void list_devices()
+{
+    void **hints;
+    int err = snd_device_name_hint(-1, "pcm", &hints);
+
+    if (err != 0) {
+        std::cerr << "snd_device_name_hint failed: " << snd_strerror(err) << "\n";
+        return;
+    }
+
+    std::cout << "Available ALSA PCM devices:\n\n";
+
+    void **n = hints;
+
+    while (*n != nullptr)
+    {
+        char *name = snd_device_name_get_hint(*n, "NAME");
+        char *desc = snd_device_name_get_hint(*n, "DESC");
+        char *ioid = snd_device_name_get_hint(*n, "IOID");
+
+        if (name)
+        {
+            std::cout << "Device: " << name;
+
+            if (ioid)
+                std::cout << " (" << ioid << ")";
+
+            std::cout << "\n";
+
+            if (desc)
+                std::cout << desc << "\n";
+
+            std::cout << "\n";
+        }
+
+        if (name) free(name);
+        if (desc) free(desc);
+        if (ioid) free(ioid);
+
+        n++;
+    }
+
+    snd_device_name_free_hint(hints);
+}
+
+int test_ringbuffer()
+{
+    std::cout << "Running ring buffer stress test...\n";
+
+    RingBuffer<int> rb(1024);
+    const int iterations = 1000000;
+
+    for (int i = 0; i < iterations; ++i) {
+
+        if (!rb.push(i)) {
+            std::cerr << "Push failed at iteration " << i << "\n";
+            return 3;
+        }
+
+        int value;
+
+        if (!rb.pop(value)) {
+            std::cerr << "Pop failed at iteration " << i << "\n";
+            return 2;
+        }
+
+        if (value != i) {
+            std::cerr << "Data mismatch: expected "
+                      << i << " got " << value << "\n";
+            return 1;
+        }
+    }
+
+    std::cout << "Ring buffer test passed (" << iterations << " iterations)\n";
+
+    return 0;
+}
 void play_beep(snd_pcm_t* handle, int freq, int duration_ms)
 {
     const int sample_rate = 16000;
@@ -231,8 +327,31 @@ static void file_write_samples(FILE* file, const int16_t* data, size_t count)
     std::fwrite(data, sizeof(int16_t), count, file);
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+    if (argc > 1)
+    {
+        std::string mode = argv[1];
+
+        if (mode == "test-ring")
+            return test_ringbuffer();
+
+        if (mode == "list-devices") {
+            list_devices();
+            return 0;
+        }
+
+        if (mode == "--help" || mode == "-h") {
+            print_help(argv[0]);
+            return 0;
+        }
+
+        std::cerr << "Unknown mode: " << mode << "\n\n";
+        print_help(argv[0]);
+        return 1;
+    }
+
+
     // Audio configuration
     const char* device = "plughw:2,0";
     unsigned int capture_sample_rate = 16000;
@@ -323,7 +442,7 @@ int main()
 
             rb_cv.notify_one();
 
-            if ((iteration % 5) == 0) {
+            if ((iteration % 10) == 0) {
                 dbgmsg("[capture] iteration " << iteration  << ": captured " << frames_read << " frames\n");
             }
         }
@@ -364,7 +483,7 @@ int main()
 
             ++frames_processed;
 
-            if ((frames_processed % 5) == 0) {
+            if ((frames_processed % 10) == 0) {
                 dbgmsg("[playback] processed frame " << frames_processed << "\n");
             }
         }
