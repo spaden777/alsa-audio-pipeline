@@ -1,6 +1,6 @@
 CXX := g++
 TARGET := alsarb
-SRC := main.cpp
+SRC := main.cpp wav.cpp
 
 COMMON_FLAGS := -Wall -Wextra -std=c++17
 DEBUG_FLAGS := -g -O0

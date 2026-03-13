@@ -6,6 +6,7 @@
 # -o pipefail  fail if any command in a pipeline fails
 set -euo pipefail
 
+rm -f samples.wav amplified.wav
 BIN=./alsarb
 
 echo "Building project..."
@@ -18,7 +19,18 @@ echo
 echo "---------------------------------"
 echo "Test: default pipeline mode"
 $BIN
-echo "PASS"
+
+if [[ ! -f samples.wav ]]; then
+    echo "FAIL: samples.wav not created"
+    exit 1
+fi
+
+if [[ ! -f amplified.wav ]]; then
+    echo "FAIL: amplified.wav not created"
+    exit 1
+fi
+
+echo "PASS: capture.wav and amplified.wav created"
 echo
 
 echo "---------------------------------"

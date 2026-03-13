@@ -14,6 +14,7 @@
 #define DEBUG_MESSAGES 1
 #include "debugmsg.hpp"
 #include "ringbuffer.hpp"
+#include "wav.hpp"
 
 void print_help(const char* prog)
 {
@@ -322,11 +323,6 @@ static void dsp_apply_gain(std::vector<int16_t>& frame, double gain)
     }
 }
 
-static void file_write_samples(FILE* file, const int16_t* data, size_t count)
-{
-    std::fwrite(data, sizeof(int16_t), count, file);
-}
-
 int main(int argc, char* argv[])
 {
     if (argc > 1)
@@ -352,6 +348,7 @@ int main(int argc, char* argv[])
     }
 
 
+
     // Audio configuration
     const char* device = "plughw:2,0";
     unsigned int capture_sample_rate = 16000;
@@ -365,7 +362,7 @@ int main(int argc, char* argv[])
     // Pipeline configuration
     const size_t processing_frame_samples = 320;
     const size_t ring_capacity = 8192;
-    const double gain = 1.5;
+    const double gain = 4.0;
     const int iterations = 200;
     const int playback_prefill_frames = 3;
 
@@ -387,12 +384,14 @@ int main(int argc, char* argv[])
 
     std::vector<int16_t> silence_frame(processing_frame_samples, 0);
 
-    FILE* raw_file = std::fopen("samples.raw", "wb");
-    FILE* amp_file = std::fopen("amplified.raw", "wb");
-    if (!raw_file || !amp_file) {
-        std::cerr << "Failed to open output files\n";
-        if (raw_file) std::fclose(raw_file);
-        if (amp_file) std::fclose(amp_file);
+    WavFile wav_cap = wav_begin("samples.wav", 16000, 1);
+    WavFile wav_amp = wav_begin("amplified.wav", 16000, 1);
+    if (!wav_cap.file || !wav_amp.file) {
+        std::cerr << "Failed to open WAV output files\n";
+    
+        if (wav_cap.file) wav_end(wav_cap);
+        if (wav_amp.file) wav_end(wav_amp);
+    
         snd_pcm_close(capture_handle);
         snd_pcm_close(playback_handle);
         return 1;
@@ -433,7 +432,8 @@ int main(int argc, char* argv[])
             if (frames_read <= 0)
                 continue;
 
-            file_write_samples(raw_file, capture_buffer.data(), frames_read);
+            // assumes mono samples
+            wav_write(wav_cap, capture_buffer.data(), frames_read);
 
             {
                 std::lock_guard<std::mutex> lock(rb_mutex);
@@ -477,7 +477,7 @@ int main(int argc, char* argv[])
 
             dsp_apply_gain(processing_frame, gain);
 
-            file_write_samples(amp_file, processing_frame.data(), processing_frame.size());
+            wav_write(wav_amp, processing_frame.data(), processing_frame.size());
 
             rend_write_buffer(playback_handle, processing_frame);
 
@@ -493,8 +493,10 @@ int main(int argc, char* argv[])
 
     snd_pcm_drain(playback_handle);
 
-    std::fclose(raw_file);
-    std::fclose(amp_file);
+    wav_end(wav_cap);
+    wav_end(wav_amp);
+    //std::fclose(raw_file);
+    //std::fclose(amp_file);
     snd_pcm_close(capture_handle);
     snd_pcm_close(playback_handle);
     return 0;
